@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Finalized Report</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <h1>Finalized Report</h1>
+    <ul>
+        <li><span>Average Engagement Probability (Experimental):</span> {{ report.average_engagement_prob_exp }}</li>
+        <li><span>Average Engagement Probability (Control):</span> {{ report.average_engagement_prob_con }}</li>
+        <li><span>Average Completion Rate:</span> {{ report.average_completion_rate }}</li>
+        <li><span>Average Time Spent Per Question:</span> {{ report.average_time_spent_per_question }}</li>
+        <li><span>Aggregated P-Value:</span> {{ report.aggregated_p_value }}</li>
+        <li><span>Aggregated Confidence Interval:</span> [{{ report.aggregated_confidence_interval[0] }}, {{ report.aggregated_confidence_interval[1] }}]</li>
+        <li><span>Best Performing Survey ID:</span> {{ report.best_performing_survey }}</li>
+    </ul>
+</body>
+</html>

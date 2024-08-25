@@ -1,0 +1,39 @@
+**Instructions for Reproducing Results and Interpreting Outcomes**
+1) Create a Survey
+
+ . Navigate to the "Create Survey" section.
+ . Enter the survey title and the number of questions.
+ . Click "Add Questions" to generate input fields for the questions.
+ . Fill in the questions and click "Create Survey".
+
+2) Generate Variations
+
+ . Navigate to the "Generate Variations" section.
+ . Enter the Survey ID of the created survey.
+ . Click "Generate Variations" to create different variations of the survey.
+
+3) View All Surveys
+
+ . Click "View All Surveys" to see a list of all created surveys and their variations.
+
+4) Start A/B Testing
+
+ . Click "AB Test Surveys" to start the A/B testing process.
+ . The system will split users into groups and present different survey variations to each group.
+5) Clear Database
+
+ . Click the "Clear Database" button to remove all surveys and variations from the database.
+6) Visualize Results
+
+ . Survey results can be visualized using the Chart.js integration.
+ . The results will show the effectiveness of different survey designs based on user feedback.
+
+7) Code structure
+
+├── static
+│   ├── styles.css
+├── templates
+│   ├── index.html
+├── app.py
+├── requirements.txt
+

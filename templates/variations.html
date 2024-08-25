@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Survey Variations</title>
+</head>
+<body>
+    <h1>Generated Variations</h1>
+    <div id="variationsContainer"></div>
+    <button onclick="goBack()">Go Back</button>
+
+    <script>
+        function loadVariations() {
+            const variations = JSON.parse(localStorage.getItem('variations'));
+            const container = document.getElementById('variationsContainer');
+            variations.forEach(variation => {
+                const p = document.createElement('p');
+                p.textContent = variation;
+                container.appendChild(p);
+            });
+        }
+
+        function goBack() {
+            window.history.back();
+        }
+
+        window.onload = loadVariations;
+    </script>
+</body>
+</html>

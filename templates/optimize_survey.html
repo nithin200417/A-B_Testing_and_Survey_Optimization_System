@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Optimize Survey</title>
+</head>
+<body>
+    <h1>Optimize Survey</h1>
+    <form action="/optimize_survey" method="post">
+        <label for="completion_rate">Completion Rate:</label>
+        <input type="number" step="0.01" id="completion_rate" name="completion_rate" required><br><br>
+        
+        <label for="time_spent_per_question">Time Spent Per Question:</label>
+        <input type="number" id="time_spent_per_question" name="time_spent_per_question" required><br><br>
+        
+        <label for="response_quality">Response Quality:</label>
+        <select id="response_quality" name="response_quality" required>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+        </select><br><br>
+        
+        <label for="questions">Questions (comma-separated):</label>
+        <textarea id="questions" name="questions" required></textarea><br><br>
+        
+        <button type="submit">Optimize</button>
+    </form>
+</body>
+</html>

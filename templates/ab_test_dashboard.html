@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>A/B Test Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <nav>
+        <a href="/dashboard">Dashboard</a>
+        <a href="/metrics">Metrics</a>
+        <a href="/ab_test_dashboard">A/B Test Dashboard</a>
+    </nav>
+
+    <h1>A/B Test Dashboard</h1>
+    
+    <h2>Key Performance Indicators (KPIs)</h2>
+    <canvas id="kpiChart" width="400" height="200"></canvas>
+    
+    <button id="finalizeAndDeployBtn">Finalize and Deploy</button>
+    
+    <script>
+        const kpiCtx = document.getElementById('kpiChart').getContext('2d');
+        const kpiData = {{ kpi_data|tojson }};
+        const kpiLabels = kpiData.map(data => data.kpi);
+        const kpiValues = kpiData.map(data => data.value);
+
+        const kpiChart = new Chart(kpiCtx, {
+            type: 'bar',
+            data: {
+                labels: kpiLabels,
+                datasets: [{
+                    label: 'KPIs',
+                    data: kpiValues,
+                    backgroundColor: [
+                        'rgba(255, 99, 132, 0.2)',
+                        'rgba(54, 162, 235, 0.2)',
+                        'rgba(255, 206, 86, 0.2)',
+                        'rgba(75, 192, 192, 0.2)',
+                        'rgba(153, 102, 255, 0.2)',
+                        'rgba(255, 159, 64, 0.2)'
+                    ],
+                    borderColor: [
+                        'rgba(255, 99, 132, 1)',
+                        'rgba(54, 162, 235, 1)',
+                        'rgba(255, 206, 86, 1)',
+                        'rgba(75, 192, 192, 1)',
+                        'rgba(153, 102, 255, 1)',
+                        'rgba(255, 159, 64, 1)'
+                    ],
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    legend: {
+                        position: 'top',
+                        labels: {
+                            font: {
+                                size: 12 
+                            }
+                        }
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(tooltipItem) {
+                                const label = tooltipItem.label;
+                                const value = tooltipItem.raw;
+                                if (label === 'Aggregated Confidence Interval') {
+                                    return `${label}: [${value[0].toFixed(2)}, ${value[1].toFixed(2)}]`;
+                                }
+                                return `${label}: ${value}`;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        document.getElementById('finalizeAndDeployBtn').addEventListener('click', () => {
+            fetch('/finalize_and_deploy', {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                alert(data.message);
+                console.log(data.report);
+            })
+            .catch(error => {
+                console.error('Error:', error);
+            });
+        });
+    </script>
+</body>
+</html>

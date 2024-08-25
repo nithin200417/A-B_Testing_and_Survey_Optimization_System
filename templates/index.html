@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Survey Sparrow Question 4</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <h1>Create Survey</h1>
+    <form id="surveyForm">
+        <label for="title">Title:</label>
+        <input type="text" id="title" name="title"><br><br>
+        <label for="numQuestions">Number of Questions:</label>
+        <input type="number" id="numQuestions" name="numQuestions" min="1"><br><br>
+        <div id="questionsContainer"></div>
+        <button type="button" onclick="addQuestions()">Add Questions</button><br><br>
+        <button type="button" onclick="createSurvey()">Create Survey</button>
+    </form>
+    <h1>Generate Variations</h1>
+    <form id="variationForm">
+        <label for="surveyId">Survey ID:</label>
+        <input type="number" id="surveyId" name="surveyId"><br><br>
+        <button type="button" onclick="generateVariations()">Generate Variations</button>
+    </form>
+    <div id="variationsContainer"></div>
+    <button type="button" onclick="viewSurveys()">View All Surveys</button>
+    <button type="button" onclick="startABTesting()">AB Test Surveys</button>
+    <!-- New button to clear the database -->
+    <button type="button" id="clearDatabaseBtn">Clear Database</button>
+
+    <script>
+        function addQuestions() {
+            const numQuestions = document.getElementById('numQuestions').value;
+            const container = document.getElementById('questionsContainer');
+            container.innerHTML = '';
+            for (let i = 1; i <= numQuestions; i++) {
+                const label = document.createElement('label');
+                label.textContent = `Question ${i}:`;
+                const input = document.createElement('input');
+                input.type = 'text';
+                input.id = `question${i}`;
+                input.name = `question${i}`;
+                container.appendChild(label);
+                container.appendChild(input);
+                container.appendChild(document.createElement('br'));
+                container.appendChild(document.createElement('br'));
+            }
+        }
+
+        function createSurvey() {
+            const title = document.getElementById('title').value;
+            const numQuestions = document.getElementById('numQuestions').value;
+            let questions = '';
+            for (let i = 1; i <= numQuestions; i++) {
+                const question = document.getElementById(`question${i}`).value;
+                questions += question + '\n';
+            }
+
+            fetch('/create_survey', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({title, questions})
+            })
+            .then(response => response.json())
+            .then(data => alert(data.message))
+            .catch(error => console.error('Error creating survey:', error));
+        }
+
+        function generateVariations() {
+            const surveyId = document.getElementById('surveyId').value;
+            fetch(`/generate_variations/${surveyId}`, {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                const container = document.getElementById('variationsContainer');
+                container.innerHTML = '';
+                data.variations.forEach((questionVariations, questionIndex) => {
+                    const questionDiv = document.createElement('div');
+                    questionDiv.innerHTML = `<h3>Question ${questionIndex + 1} Variations:</h3>`;
+                    questionVariations.forEach((variation, variationIndex) => {
+                        const div = document.createElement('div');
+                        div.innerHTML = `<input type="radio" name="question${questionIndex}" value="${variation}" id="variation${questionIndex}_${variationIndex}">
+                                         <label for="variation${questionIndex}_${variationIndex}"><input type="text" value="${variation}" id="variationText${questionIndex}_${variationIndex}"></label>`;
+                        questionDiv.appendChild(div);
+                    });
+                    const saveButton = document.createElement('button');
+                    saveButton.textContent = 'Save Variation';
+                    saveButton.onclick = () => saveVariation(surveyId, questionIndex);
+                    questionDiv.appendChild(saveButton);
+                    container.appendChild(questionDiv);
+                });
+            })
+            .catch(error => console.error('Error generating variations:', error));
+        }
+
+        function saveVariation(surveyId, questionIndex) {
+            const selectedVariation = document.querySelector(`input[name="question${questionIndex}"]:checked`);
+            if (selectedVariation) {
+                const variationText = document.getElementById(`variationText${questionIndex}_${selectedVariation.id.split('_')[1]}`).value;
+                fetch(`/update_question/${surveyId}/${questionIndex}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({selected_variation: variationText})
+                })
+                .then(response => response.json())
+                .then(data => alert(data.message))
+                .catch(error => console.error('Error:', error));
+            } else {
+                alert('Please select a variation to save.');
+            }
+        }
+
+        function viewSurveys() {
+            window.location.href = '/surveys';
+        }
+
+        function startABTesting() {
+            fetch('/ab_test_surveys', {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => alert(data.message))
+            .catch(error => console.error('Error starting A/B testing:', error));
+        }
+
+        // JavaScript to handle the Clear Database button click
+        document.getElementById('clearDatabaseBtn').addEventListener('click', function() {
+            fetch('/clear_database', {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => alert(data.message))
+            .catch(error => console.error('Error clearing database:', error));
+        });
+    </script>
+</body>
+</html>

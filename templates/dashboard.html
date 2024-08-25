@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.socket.io/4.0.0/socket.io.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+</head>
+<body>
+    <h1>Dashboard</h1>
+    
+    <button id="startABTesting">Start A/B Testing</button>
+
+    <div id="message"></div>
+    <div id="progress-bar">
+        <div id="progress"></div>
+    </div>
+
+    <h2>A/B Test Results</h2>
+    <div id="abTestResults"></div>
+    <button id="loadMoreResults">Load More Results</button>
+
+    <script>
+        const socket = io.connect('http://' + document.domain + ':' + location.port);
+
+        let currentPage = 1;
+        const perPage = 10;
+
+        document.getElementById('startABTesting').addEventListener('click', function() {
+            fetch('/start_ab_testing', {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('message').textContent = data.message;
+                fetchABTestResults(); // Fetch results after starting A/B testing
+            })
+            .catch(error => console.error('Error starting A/B testing:', error));
+        });
+
+        document.getElementById('loadMoreResults').addEventListener('click', function() {
+            currentPage++;
+            fetchABTestResults();
+        });
+
+        socket.on('update_dashboard', function(data) {
+            document.getElementById('message').textContent = data.message;
+            if (data.progress !== undefined) {
+                document.getElementById('progress').style.width = data.progress + '%';
+            }
+        });
+
+        function fetchABTestResults() {
+            fetch(`/ab_test_results?page=${currentPage}&per_page=${perPage}`)
+                .then(response => response.json())
+                .then(data => renderABTestResults(data))
+                .catch(error => console.error('Error fetching A/B test results:', error));
+        }
+
+        function renderABTestResults(data) {
+            const resultsDiv = document.getElementById('abTestResults');
+
+            data.forEach(result => {
+                const surveyDiv = document.createElement('div');
+                surveyDiv.innerHTML = `
+                    <h3>Survey ID: ${result.survey_id}</h3>
+                    <p>Engagement probability in control group: ${result.engagement_prob_con}</p>
+                    <p>Engagement probability in experimental group: ${result.engagement_prob_exp}</p>
+                    <p>P-value: ${result.p_value}</p>
+                    <p>Confidence Interval: [${result.confidence_interval[0]}, ${result.confidence_interval[1]}]</p>
+                    <div id="plot_${result.survey_id}"></div>
+                `;
+                resultsDiv.appendChild(surveyDiv);
+
+                const trace1 = {
+                    x: ['Control', 'Experimental'],
+                    y: [result.engagement_prob_con, result.engagement_prob_exp],
+                    type: 'bar'
+                };
+
+                const layout = {
+                    title: `Survey ID: ${result.survey_id}`,
+                    xaxis: { title: 'Group' },
+                    yaxis: { title: 'Engagement Probability' }
+                };
+
+                Plotly.newPlot(`plot_${result.survey_id}`, [trace1], layout);
+            });
+        }
+
+        fetchABTestResults();
+    </script>
+    <nav>
+        <a href="/dashboard">Dashboard</a>
+        <a href="/metrics">Metrics</a>
+        <a href="/ab_test_dashboard">A/B Test Dashboard</a>
+    </nav>
+</body>
+</html>

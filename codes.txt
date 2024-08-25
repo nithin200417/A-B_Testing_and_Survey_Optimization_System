@@ -1,0 +1,1264 @@
+app.py
+from flask import Flask, request, jsonify, render_template, redirect, url_for
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from sqlalchemy.orm import Session
+import random
+import nltk
+from nltk.corpus import wordnet
+from datetime import datetime
+import numpy as np
+import pandas as pd
+from scipy.stats import norm
+import csv
+import random
+import os
+import joblib
+
+nltk.download('wordnet', quiet=True)
+
+app = Flask(__name__)
+app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:///surveys.db"
+app.config['SECRET_KEY'] = 'your_secret_key'
+db = SQLAlchemy(app)
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
+model_path = 'survey_model.pkl'
+model = None
+if os.path.isfile(model_path):
+    model = joblib.load(model_path)
+
+class User(UserMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(150), unique=True, nullable=False)
+    password = db.Column(db.String(150), nullable=False)
+
+class Survey(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(100))
+    questions = db.Column(db.String(500))
+    completion_time = db.Column(db.DateTime)
+    engagement_score = db.Column(db.Float)
+    conversion = db.Column(db.Boolean)
+
+class SurveyVariation(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    survey_id = db.Column(db.Integer, db.ForeignKey('survey.id'))
+    variation = db.Column(db.String(500))
+    
+def save_ab_test_result(data):
+    file_exists = os.path.isfile('ab_test_results.csv')
+    with open('ab_test_results.csv', mode='a', newline='') as file:
+        writer = csv.writer(file)
+        if not file_exists:
+            writer.writerow(['survey_id', 'completion_rate', 'time_spent_per_question', 'response_quality', 'engagement_prob_con', 'engagement_prob_exp'])
+        writer.writerow([data['survey_id'], data['completion_rate'], data['time_spent_per_question'], data['response_quality'], data['engagement_prob_con'], data['engagement_prob_exp']])
+
+class SurveyResponse(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    survey_id = db.Column(db.Integer, db.ForeignKey('survey.id'))
+    survey_version = db.Column(db.String(50))  
+    response = db.Column(db.String(200))
+    completion_time = db.Column(db.DateTime)
+    engagement_score = db.Column(db.Float)
+    conversion = db.Column(db.Boolean)
+
+with app.app_context():
+    db.create_all()
+
+@login_manager.user_loader
+def load_user(user_id):
+    with Session(db.engine) as session:
+        return session.get(User, int(user_id))
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        user = User.query.filter_by(username=username).first()
+        if user and user.password == password:
+            login_user(user)
+            return redirect(url_for('index'))
+    return render_template('login.html')
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        if User.query.filter_by(username=username).first():
+            return 'Username already exists'
+        new_user = User(username=username, password=password)
+        db.session.add(new_user)
+        db.session.commit()
+        login_user(new_user)
+        return redirect(url_for('index'))
+    return render_template('register.html')
+
+@app.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    return redirect(url_for('login'))
+
+@app.route('/')
+@login_required
+def index():
+    return render_template('index.html')
+
+@app.route('/surveys')
+@login_required
+def surveys():
+    return render_template('surveys.html')
+
+@app.route('/variations')
+@login_required
+def variations():
+    return render_template('variations.html')
+
+@app.route('/create_survey', methods=['POST'])
+@login_required
+def create_survey():
+    try:
+        data = request.json
+        new_survey = Survey(title=data['title'], questions=data['questions'])
+        db.session.add(new_survey)
+        db.session.commit()
+        return jsonify({'message': 'Survey created successfully'})
+    except Exception as e:
+        return jsonify({'message': 'Error creating survey', 'error': str(e)}), 500
+
+@app.route('/generate_variations/<int:survey_id>', methods=['POST'])
+@login_required
+def generate_variations(survey_id):
+    try:
+        with Session(db.engine) as session:
+            survey = session.get(Survey, survey_id)
+            if not survey:
+                return jsonify({'message': 'Survey not found'}), 404
+
+            questions = survey.questions.split('\n')
+            all_variations = []
+            for question in questions:
+                if question.strip():
+                    variations = [generate_variation(question) for _ in range(3)]
+                    all_variations.append(variations)
+
+                    # Add variations to the database
+                    for variation in variations:
+                        new_variation = SurveyVariation(survey_id=survey.id, variation=variation)
+                        session.add(new_variation)
+                    session.commit()
+
+            return jsonify({'variations': all_variations})
+    except Exception as e:
+        app.logger.error(f"Error generating variations: {e}")
+        return jsonify({'message': 'Error generating variations', 'error': str(e)}), 500
+
+@app.route('/update_question/<int:survey_id>/<int:question_index>', methods=['POST'])
+@login_required
+def update_question(survey_id, question_index):
+    try:
+        data = request.json
+        with Session(db.engine) as session:
+            survey = session.get(Survey, survey_id)
+            if not survey:
+                return jsonify({'message': 'Survey not found'}), 404
+            questions = survey.questions.split('\n')
+            if question_index < len(questions):
+                questions[question_index] = data['selected_variation']
+                survey.questions = '\n'.join(questions)
+                session.commit()
+                return jsonify({'message': 'Question updated successfully'})
+            else:
+                return jsonify({'message': 'Question index out of range'}), 400
+    except Exception as e:
+        app.logger.error(f"Error updating survey: {e}")
+        return jsonify({'message': 'Error updating survey', 'error': str(e)}), 500
+
+@app.route('/get_surveys', methods=['GET'])
+@login_required
+def get_surveys():
+    try:
+        surveys = Survey.query.all()
+        surveys_list = [{'id': survey.id, 'title': survey.title, 'questions': survey.questions} for survey in surveys]
+        return jsonify({'surveys': surveys_list})
+    except Exception as e:
+        app.logger.error(f"Error fetching surveys: {e}")
+        return jsonify({'message': 'Error fetching surveys', 'error': str(e)}), 500
+
+@app.route('/dashboard')
+def dashboard():
+    return render_template('dashboard.html')
+
+@app.route('/start_ab_testing', methods=['POST'])
+@login_required
+def start_ab_testing():
+    try:
+        surveys = Survey.query.all()
+        for survey in surveys:
+            variations = SurveyVariation.query.filter_by(survey_id=survey.id).all()
+            all_versions = [('original', survey)] + [('variation', var) for var in variations]
+
+            users = User.query.all()
+            for user in users:
+                survey_version, content = random.choice(all_versions)
+                response = SurveyResponse(
+                    user_id=user.id,
+                    survey_id=content.id,
+                    survey_version=survey_version,
+                    response='',
+                    completion_time=None,
+                    engagement_score=0.0,
+                    conversion=False
+                )
+                db.session.add(response)
+                db.session.commit()
+        return jsonify({'message': 'A/B testing started'})
+    except Exception as e:
+        app.logger.error(f"Error starting A/B testing: {e}")
+        return jsonify({'message': 'Error starting A/B testing', 'error': str(e)}), 500
+
+@app.route('/metrics', methods=['GET'])
+def get_metrics():
+    try:
+        total_responses = SurveyResponse.query.count()
+        version_a_responses = SurveyResponse.query.filter_by(survey_version='original').count()
+        version_b_responses = SurveyResponse.query.filter_by(survey_version='variation').count()
+
+        engagement_scores = {
+            'original': SurveyResponse.query.filter_by(survey_version='original').with_entities(db.func.avg(SurveyResponse.engagement_score)).scalar(),
+            'variation': SurveyResponse.query.filter_by(survey_version='variation').with_entities(db.func.avg(SurveyResponse.engagement_score)).scalar()
+        }
+
+        conversions = {
+            'original': SurveyResponse.query.filter_by(survey_version='original', conversion=True).count(),
+            'variation': SurveyResponse.query.filter_by(survey_version='variation', conversion=True).count()
+        }
+
+        return jsonify({
+            'total_responses': total_responses,
+            'version_a_responses': version_a_responses,
+            'version_b_responses': version_b_responses,
+            'engagement_scores': engagement_scores,
+            'conversions': conversions
+        })
+    except Exception as e:
+        app.logger.error(f"Error fetching metrics: {e}")
+        return jsonify({'message': 'Error fetching metrics', 'error': str(e)}), 500
+
+@app.route('/ab_test_results', methods=['GET'])
+def ab_test_results():
+    try:
+        page = int(request.args.get('page', 1))
+        per_page = int(request.args.get('per_page', 10))
+        df = pd.read_csv('survey_data.csv')
+        
+        start = (page - 1) * per_page
+        end = start + per_page
+        paginated_df = df.iloc[start:end]
+
+        results = []
+        for _, row in paginated_df.iterrows():
+            survey_id = row['survey_id']
+            completion_rate = row['completion_rate']
+            time_spent_per_question = row['time_spent_per_question']
+            response_quality = row['response_quality']
+
+            # Introduce random noise
+            completion_rate += random.uniform(-0.05, 0.05)
+            time_spent_per_question += random.uniform(-5, 5)
+            response_quality = random.choice(['low', 'medium', 'high'])
+
+            p_con_hat = completion_rate
+            p_exp_hat = completion_rate * 1.1  
+
+            N_con = 100  
+            N_exp = 100  
+
+            p_pooled_hat = (p_con_hat * N_con + p_exp_hat * N_exp) / (N_con + N_exp)
+            pooled_variance = p_pooled_hat * (1 - p_pooled_hat) * (1 / N_con + 1 / N_exp)
+            SE = np.sqrt(pooled_variance)
+            if SE == 0:
+                Test_stat = float('inf')  # or some large number
+                p_value = 0.0
+                CI = [0, 0]
+            else:
+                Test_stat = (p_exp_hat - p_con_hat) / SE
+                alpha = 0.05
+                Z_crit = norm.ppf(1 - alpha / 2)
+                p_value = 2 * norm.sf(abs(Test_stat))
+                CI = [(p_exp_hat - p_con_hat) - SE * Z_crit, (p_exp_hat - p_con_hat) + SE * Z_crit]
+
+            survey_data = {
+                'completion_rate': completion_rate,
+                'time_spent_per_question': time_spent_per_question,
+                'response_quality': response_quality
+            }
+            suggestion = suggest_changes(survey_data)
+            result = {
+                'survey_id': survey_id,
+                'completion_rate': round(completion_rate, 2),
+                'time_spent_per_question': round(time_spent_per_question, 2),
+                'response_quality': response_quality,
+                'engagement_prob_con': round(p_con_hat, 2),  
+                'engagement_prob_exp': round(p_exp_hat, 2),
+                'p_value': p_value,
+                'confidence_interval': [round(CI[0], 2), round(CI[1], 2)],
+                'suggestion': suggestion
+            }
+            results.append(result)
+
+            # Save the result to the dataset
+            save_ab_test_result(result)
+        return jsonify(results)
+    except Exception as e:
+        app.logger.error(f"Error fetching A/B test results: {e}")
+        return jsonify({'message': 'Error fetching A/B test results', 'error': str(e)}), 500
+    
+def save_ab_test_result(data):
+    file_exists = os.path.isfile('ab_test_results.csv')
+    with open('ab_test_results.csv', mode='a', newline='') as file:
+        writer = csv.writer(file)
+        if not file_exists:
+            writer.writerow(['survey_id', 'completion_rate', 'time_spent_per_question', 'response_quality', 'engagement_prob_con', 'engagement_prob_exp'])
+        writer.writerow([data['survey_id'], data['completion_rate'], data['time_spent_per_question'], data['response_quality'], data['engagement_prob_con'], data['engagement_prob_exp']])
+
+def generate_variation(question):
+    words = question.split()
+    variation = []
+    for word in words:
+        synonyms = wordnet.synsets(word)
+        if synonyms:
+            synonym = random.choice(synonyms).lemmas()[0].name()
+            variation.append(synonym)
+        else:
+            variation.append(word)
+    return ' '.join(variation)
+
+def suggest_changes(survey_data):
+    if model is None:
+        return "Model not available. Please train the model first."
+    
+    survey_features = pd.DataFrame([survey_data])
+    survey_features = pd.get_dummies(survey_features)
+    
+    missing_cols = set(model.feature_names_in_) - set(survey_features.columns)
+    for col in missing_cols:
+        survey_features[col] = 0
+    survey_features = survey_features[model.feature_names_in_]
+    
+    predicted_engagement = model.predict(survey_features)
+    if predicted_engagement < 0.5:
+        return "Increase completion rate or improve response quality."
+    else:
+        return "Survey design is effective."
+    
+def generate_report(ab_test_df, survey_comparison_df, p_value, CI):
+    report = {
+        'average_engagement_prob_exp': float(ab_test_df['engagement_prob_exp'].mean()),
+        'average_engagement_prob_con': float(ab_test_df['engagement_prob_con'].mean()),
+        'average_completion_rate': float(survey_comparison_df['completion_rate'].mean()),
+        'average_time_spent_per_question': float(survey_comparison_df['time_spent_per_question'].mean()),
+        'aggregated_p_value': float(p_value),
+        'aggregated_confidence_interval': [float(CI[0]), float(CI[1])],
+        'best_performing_survey': int(ab_test_df.loc[ab_test_df['engagement_prob_exp'].idxmax()]['survey_id'])
+    }
+    return report
+
+def calculate_aggregated_metrics(df):
+    p_con_hat = df['completion_rate'].mean()
+    p_exp_hat = p_con_hat * 1.1  
+
+    N_con = len(df)  
+    N_exp = len(df)  
+
+    p_pooled_hat = (p_con_hat * N_con + p_exp_hat * N_exp) / (N_con + N_exp)
+    pooled_variance = p_pooled_hat * (1 - p_pooled_hat) * (1 / N_con + 1 / N_exp)
+    SE = np.sqrt(pooled_variance)
+    if SE == 0:
+        Test_stat = float('inf')  
+        p_value = 0.0
+        CI = [0, 0]
+    else:
+        Test_stat = (p_exp_hat - p_con_hat) / SE
+        alpha = 0.05
+        Z_crit = norm.ppf(1 - alpha / 2)
+        p_value = 2 * norm.sf(abs(Test_stat))
+        CI = [(p_exp_hat - p_con_hat) - SE * Z_crit, (p_exp_hat - p_con_hat) + SE * Z_crit]
+    
+    return p_value, CI
+
+@app.route('/clear_database', methods=['POST'])
+def clear_database():
+    try:
+        db.drop_all()
+        db.create_all()
+        return jsonify({'message': 'Database cleared successfully'})
+    except Exception as e:
+        app.logger.error(f"Error clearing database: {e}")
+        return jsonify({'message': 'Error clearing database', 'error': str(e)}), 500
+
+@app.route('/predict', methods=['POST'])
+def predict():
+    try:
+        data = request.json
+        input_data = pd.DataFrame([data])
+        input_data = pd.get_dummies(input_data)
+        missing_cols = set(model.feature_names_in_) - set(input_data.columns)
+        for col in missing_cols:
+            input_data[col] = 0
+        input_data = input_data[model.feature_names_in_]
+        prediction = model.predict(input_data)
+        return jsonify({'prediction': prediction[0]})
+    except Exception as e:
+        app.logger.error(f"Error making prediction: {e}")
+        return jsonify({'message': 'Error making prediction', 'error': str(e)}), 500
+    
+def save_optimized_survey_results(results):
+    file_exists = os.path.isfile('optimized_survey_results.csv')
+    with open('optimized_survey_results.csv', mode='a', newline='') as file:
+        writer = csv.writer(file)
+        if not file_exists:
+            writer.writerow(['variation', 'suggestion'])
+        for result in results:
+            writer.writerow([result['variation'], result['suggestion']])
+
+@app.route('/optimize_survey', methods=['POST'])
+def optimize_survey():
+    try:
+        completion_rate = float(request.form['completion_rate'])
+        time_spent_per_question = int(request.form['time_spent_per_question'])
+        response_quality = request.form['response_quality']
+        questions = request.form['questions'].split(',')
+        variations = [generate_variation(question) for question in questions]
+        results = []
+        for variation in variations:
+            survey_data = {
+                'completion_rate': completion_rate,
+                'time_spent_per_question': time_spent_per_question,
+                'response_quality': response_quality,
+                'questions': variation
+            }
+            suggestion = suggest_changes(survey_data)
+            results.append({
+                'variation': variation,
+                'suggestion': suggestion
+            })
+        save_optimized_survey_results(results)
+        return jsonify(results)
+    except Exception as e:
+        app.logger.error(f"Error optimizing survey: {e}")
+        return jsonify({'message': 'Error optimizing survey', 'error': str(e)}), 500
+
+@app.route('/view_optimized_results', methods=['GET'])
+def view_optimized_results():
+    try:
+        df = pd.read_csv('optimized_survey_results.csv')
+        results = df.to_dict(orient='records')
+        return render_template('optimized_results.html', results=results)
+    except Exception as e:
+        app.logger.error(f"Error reading optimized survey results: {e}")
+        return jsonify({'message': 'Error reading optimized survey results', 'error': str(e)}), 500
+
+@app.route('/optimize_survey_form', methods=['GET'])
+def optimize_survey_form():
+    return render_template('optimize_survey.html')
+
+@app.route('/ab_test_dashboard', methods=['GET'])
+def ab_test_dashboard():
+    try:
+        ab_test_df = pd.read_csv('ab_test_results.csv')
+        def calculate_aggregated_metrics(df):
+            p_con_hat = df['completion_rate'].mean()
+            p_exp_hat = p_con_hat * 1.1  
+
+            N_con = len(df)  
+            N_exp = len(df)  
+
+            p_pooled_hat = (p_con_hat * N_con + p_exp_hat * N_exp) / (N_con + N_exp)
+            pooled_variance = p_pooled_hat * (1 - p_pooled_hat) * (1 / N_con + 1 / N_exp)
+            SE = np.sqrt(pooled_variance)
+            if SE == 0:
+                Test_stat = float('inf')  
+                p_value = 0.0
+                CI = [0, 0]
+            else:
+                Test_stat = (p_exp_hat - p_con_hat) / SE
+                alpha = 0.05
+                Z_crit = norm.ppf(1 - alpha / 2)
+                p_value = 2 * norm.sf(abs(Test_stat))
+                CI = [(p_exp_hat - p_con_hat) - SE * Z_crit, (p_exp_hat - p_con_hat) + SE * Z_crit]
+            
+            return p_value, CI
+
+        p_value, CI = calculate_aggregated_metrics(ab_test_df)
+        survey_comparison_df = pd.read_csv('survey_data.csv')
+        
+        kpi_data = [
+            {
+                'kpi': 'Average Engagement Probability (Experimental)',
+                'value': ab_test_df['engagement_prob_exp'].mean()
+            },
+            {
+                'kpi': 'Average Engagement Probability (Control)',
+                'value': ab_test_df['engagement_prob_con'].mean()
+            },
+            {
+                'kpi': 'Average Completion Rate',
+                'value': survey_comparison_df['completion_rate'].mean()
+            },
+            {
+                'kpi': 'Average Time Spent per Question',
+                'value': survey_comparison_df['time_spent_per_question'].mean()
+            },
+            {
+                'kpi': 'Aggregated P-Value',
+                'value': p_value
+            },
+            {
+                'kpi': 'Aggregated Confidence Interval',
+                'value': CI
+            }
+        ]
+        
+        kpi_data = kpi_data if kpi_data else []
+        return render_template('ab_test_dashboard.html', kpi_data=kpi_data)
+    except Exception as e:
+        app.logger.error(f"Error fetching A/B test dashboard data: {e}")
+        return jsonify({'message': 'Error fetching A/B test dashboard data', 'error': str(e)}), 500
+
+@app.route('/finalize_and_deploy', methods=['POST'])
+def finalize_and_deploy():
+    try:
+        ab_test_df = pd.read_csv('ab_test_results.csv')
+        p_value, CI = calculate_aggregated_metrics(ab_test_df)
+        survey_comparison_df = pd.read_csv('survey_data.csv')
+        report = generate_report(ab_test_df, survey_comparison_df, p_value, CI)
+        best_survey_id = report['best_performing_survey']
+        deploy_survey(best_survey_id)
+        
+        return jsonify({'message': 'Survey finalized and deployed successfully', 'report': report}), 200
+    except Exception as e:
+        app.logger.error(f"Error finalizing and deploying survey: {e}")
+        return jsonify({'message': 'Error finalizing and deploying survey', 'error': str(e)}), 500
+
+def deploy_survey(survey_id):
+    print(f"Deploying survey with ID: {survey_id}")
+    
+@app.route('/view_report', methods=['GET'])
+def view_report():
+    try:
+        ab_test_df = pd.read_csv('ab_test_results.csv')
+        survey_comparison_df = pd.read_csv('survey_data.csv')
+        p_value, CI = calculate_aggregated_metrics(ab_test_df)
+        report = generate_report(ab_test_df, survey_comparison_df, p_value, CI)
+        
+        return render_template('report.html', report=report)
+    except Exception as e:
+        app.logger.error(f"Error viewing report: {e}")
+        return jsonify({'message': 'Error viewing report', 'error': str(e)}), 500
+    
+if __name__ == '__main__':
+    app.run(debug=True)
+report.html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Finalized Report</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <h1>Finalized Report</h1>
+    <ul>
+        <li><span>Average Engagement Probability (Experimental):</span> {{ report.average_engagement_prob_exp }}</li>
+        <li><span>Average Engagement Probability (Control):</span> {{ report.average_engagement_prob_con }}</li>
+        <li><span>Average Completion Rate:</span> {{ report.average_completion_rate }}</li>
+        <li><span>Average Time Spent Per Question:</span> {{ report.average_time_spent_per_question }}</li>
+        <li><span>Aggregated P-Value:</span> {{ report.aggregated_p_value }}</li>
+        <li><span>Aggregated Confidence Interval:</span> [{{ report.aggregated_confidence_interval[0] }}, {{ report.aggregated_confidence_interval[1] }}]</li>
+        <li><span>Best Performing Survey ID:</span> {{ report.best_performing_survey }}</li>
+    </ul>
+</body>
+</html>
+styles.css
+body {
+    font-family: Arial, sans-serif;
+    background-color: #f4f4f4;
+    margin: 0;
+    padding: 0;
+}
+
+h1 {
+    text-align: center;
+    color: #333;
+    margin-top: 20px;
+}
+
+ul {
+    list-style-type: none;
+    padding: 0;
+    max-width: 600px;
+    margin: 20px auto;
+    background: #fff;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+}
+
+li {
+    padding: 10px;
+    border-bottom: 1px solid #ddd;
+}
+
+li:last-child {
+    border-bottom: none;
+}
+
+li span {
+    font-weight: bold;
+    color: #555;
+}
+optimize_survey.html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Optimize Survey</title>
+</head>
+<body>
+    <h1>Optimize Survey</h1>
+    <form action="/optimize_survey" method="post">
+        <label for="completion_rate">Completion Rate:</label>
+        <input type="number" step="0.01" id="completion_rate" name="completion_rate" required><br><br>
+        
+        <label for="time_spent_per_question">Time Spent Per Question:</label>
+        <input type="number" id="time_spent_per_question" name="time_spent_per_question" required><br><br>
+        
+        <label for="response_quality">Response Quality:</label>
+        <select id="response_quality" name="response_quality" required>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+        </select><br><br>
+        
+        <label for="questions">Questions (comma-separated):</label>
+        <textarea id="questions" name="questions" required></textarea><br><br>
+        
+        <button type="submit">Optimize</button>
+    </form>
+</body>
+</html>
+optimized_results.html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Optimized Survey Results</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <h1>Optimized Survey Results</h1>
+    <canvas id="resultsChart" width="400" height="200"></canvas>
+    <script>
+        const ctx = document.getElementById('resultsChart').getContext('2d');
+        const results = {{ results|tojson }};
+        const labels = results.map(result => result.variation);
+        const suggestions = results.map(result => result.suggestion);
+
+        const data = {
+            labels: labels,
+            datasets: [{
+                label: 'Suggestions',
+                data: suggestions.map(suggestion => suggestion === 'Survey design is effective.' ? 1 : 0), 
+                backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                borderColor: 'rgba(75, 192, 192, 1)',
+                borderWidth: 1
+            }]
+        };
+
+        const config = {
+            type: 'bar',
+            data: data,
+            options: {
+                scales: {
+                    y: {
+                        beginAtZero: true
+                    }
+                }
+            }
+        };
+
+        const resultsChart = new Chart(ctx, config);
+    </script>
+</body>
+</html>
+dashboard.html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.socket.io/4.0.0/socket.io.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+</head>
+<body>
+    <h1>Dashboard</h1>
+    
+    <button id="startABTesting">Start A/B Testing</button>
+
+    <div id="message"></div>
+    <div id="progress-bar">
+        <div id="progress"></div>
+    </div>
+
+    <h2>A/B Test Results</h2>
+    <div id="abTestResults"></div>
+    <button id="loadMoreResults">Load More Results</button>
+
+    <script>
+        const socket = io.connect('http://' + document.domain + ':' + location.port);
+
+        let currentPage = 1;
+        const perPage = 10;
+
+        document.getElementById('startABTesting').addEventListener('click', function() {
+            fetch('/start_ab_testing', {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('message').textContent = data.message;
+                fetchABTestResults(); // Fetch results after starting A/B testing
+            })
+            .catch(error => console.error('Error starting A/B testing:', error));
+        });
+
+        document.getElementById('loadMoreResults').addEventListener('click', function() {
+            currentPage++;
+            fetchABTestResults();
+        });
+
+        socket.on('update_dashboard', function(data) {
+            document.getElementById('message').textContent = data.message;
+            if (data.progress !== undefined) {
+                document.getElementById('progress').style.width = data.progress + '%';
+            }
+        });
+
+        function fetchABTestResults() {
+            fetch(`/ab_test_results?page=${currentPage}&per_page=${perPage}`)
+                .then(response => response.json())
+                .then(data => renderABTestResults(data))
+                .catch(error => console.error('Error fetching A/B test results:', error));
+        }
+
+        function renderABTestResults(data) {
+            const resultsDiv = document.getElementById('abTestResults');
+
+            data.forEach(result => {
+                const surveyDiv = document.createElement('div');
+                surveyDiv.innerHTML = `
+                    <h3>Survey ID: ${result.survey_id}</h3>
+                    <p>Engagement probability in control group: ${result.engagement_prob_con}</p>
+                    <p>Engagement probability in experimental group: ${result.engagement_prob_exp}</p>
+                    <p>P-value: ${result.p_value}</p>
+                    <p>Confidence Interval: [${result.confidence_interval[0]}, ${result.confidence_interval[1]}]</p>
+                    <div id="plot_${result.survey_id}"></div>
+                `;
+                resultsDiv.appendChild(surveyDiv);
+
+                const trace1 = {
+                    x: ['Control', 'Experimental'],
+                    y: [result.engagement_prob_con, result.engagement_prob_exp],
+                    type: 'bar'
+                };
+
+                const layout = {
+                    title: `Survey ID: ${result.survey_id}`,
+                    xaxis: { title: 'Group' },
+                    yaxis: { title: 'Engagement Probability' }
+                };
+
+                Plotly.newPlot(`plot_${result.survey_id}`, [trace1], layout);
+            });
+        }
+
+        fetchABTestResults();
+    </script>
+    <nav>
+        <a href="/dashboard">Dashboard</a>
+        <a href="/metrics">Metrics</a>
+        <a href="/ab_test_dashboard">A/B Test Dashboard</a>
+    </nav>
+</body>
+</html>
+ab_test_dashboard.html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>A/B Test Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <nav>
+        <a href="/dashboard">Dashboard</a>
+        <a href="/metrics">Metrics</a>
+        <a href="/ab_test_dashboard">A/B Test Dashboard</a>
+    </nav>
+
+    <h1>A/B Test Dashboard</h1>
+    
+    <h2>Key Performance Indicators (KPIs)</h2>
+    <canvas id="kpiChart" width="400" height="200"></canvas>
+    
+    <button id="finalizeAndDeployBtn">Finalize and Deploy</button>
+    
+    <script>
+        const kpiCtx = document.getElementById('kpiChart').getContext('2d');
+        const kpiData = {{ kpi_data|tojson }};
+        const kpiLabels = kpiData.map(data => data.kpi);
+        const kpiValues = kpiData.map(data => data.value);
+
+        const kpiChart = new Chart(kpiCtx, {
+            type: 'bar',
+            data: {
+                labels: kpiLabels,
+                datasets: [{
+                    label: 'KPIs',
+                    data: kpiValues,
+                    backgroundColor: [
+                        'rgba(255, 99, 132, 0.2)',
+                        'rgba(54, 162, 235, 0.2)',
+                        'rgba(255, 206, 86, 0.2)',
+                        'rgba(75, 192, 192, 0.2)',
+                        'rgba(153, 102, 255, 0.2)',
+                        'rgba(255, 159, 64, 0.2)'
+                    ],
+                    borderColor: [
+                        'rgba(255, 99, 132, 1)',
+                        'rgba(54, 162, 235, 1)',
+                        'rgba(255, 206, 86, 1)',
+                        'rgba(75, 192, 192, 1)',
+                        'rgba(153, 102, 255, 1)',
+                        'rgba(255, 159, 64, 1)'
+                    ],
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    legend: {
+                        position: 'top',
+                        labels: {
+                            font: {
+                                size: 12 
+                            }
+                        }
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(tooltipItem) {
+                                const label = tooltipItem.label;
+                                const value = tooltipItem.raw;
+                                if (label === 'Aggregated Confidence Interval') {
+                                    return `${label}: [${value[0].toFixed(2)}, ${value[1].toFixed(2)}]`;
+                                }
+                                return `${label}: ${value}`;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        document.getElementById('finalizeAndDeployBtn').addEventListener('click', () => {
+            fetch('/finalize_and_deploy', {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                alert(data.message);
+                console.log(data.report);
+            })
+            .catch(error => {
+                console.error('Error:', error);
+            });
+        });
+    </script>
+</body>
+</html>
+train_model.py
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error
+import joblib
+
+df = pd.read_csv('ab_test_results.csv')
+
+features = df[['completion_rate', 'time_spent_per_question', 'response_quality']]
+target = df['engagement_prob_exp']
+
+features = pd.get_dummies(features)
+
+X_train, X_test, y_train, y_test = train_test_split(features, target, test_size=0.2, random_state=42)
+
+model = RandomForestRegressor(n_estimators=100, random_state=42)
+model.fit(X_train, y_train)
+
+y_pred = model.predict(X_test)
+mse = mean_squared_error(y_test, y_pred)
+print(f'Mean Squared Error: {mse}')
+
+joblib.dump(model, 'survey_model.pkl')
+datagen.py
+import pandas as pd
+import numpy as np
+
+num_rows = 10
+
+data = {
+    'survey_id': np.arange(1, num_rows + 1),
+    'completion_rate': np.random.choice([0.6, 0.7, 0.8, 0.9], num_rows, p=[0.25, 0.25, 0.25, 0.25]),
+    'time_spent_per_question': np.random.choice([25, 30, 35, 45], num_rows, p=[0.25, 0.25, 0.25, 0.25]),
+    'response_quality': np.random.choice(['low', 'medium', 'high'], num_rows, p=[0.33, 0.33, 0.34])
+}
+
+df = pd.DataFrame(data)
+
+df.to_csv('survey_data.csv', index=False)
+
+print("Dataset generated and saved to 'survey_data.csv'")
+
+ab_testing.py
+from flask import Flask, request, jsonify
+from flask_sqlalchemy import SQLAlchemy
+from flask_socketio import SocketIO, emit
+import random
+from datetime import datetime
+from app import db, Survey, SurveyVariation, SurveyResponse, User
+from flask_migrate import Migrate
+
+app = Flask(__name__)
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///survey.db'
+db = SQLAlchemy(app)
+socketio = SocketIO(app)
+migrate = Migrate(app, db)
+
+class SurveyResponse(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.String(50))
+    survey_id = db.Column(db.Integer, db.ForeignKey('survey.id'))
+    survey_version = db.Column(db.String(50))
+    response = db.Column(db.String(200))
+    completion_time = db.Column(db.DateTime)
+    engagement_score = db.Column(db.Float)
+    conversion = db.Column(db.Boolean)
+
+@app.route('/assign_survey', methods=['POST'])
+def assign_survey():
+    user_id = request.json['user_id']
+    survey_versions = ['A', 'B']
+    assigned_version = random.choice(survey_versions)
+    
+    new_response = SurveyResponse(
+        user_id=user_id,
+        survey_version=assigned_version,
+        response='',
+        completion_time=None,
+        engagement_score=0.0,
+        conversion=False
+    )
+    db.session.add(new_response)
+    db.session.commit()
+    
+    return jsonify({'user_id': user_id, 'assigned_version': assigned_version})
+
+@app.route('/submit_response', methods=['POST'])
+def submit_response():
+    data = request.json
+    response = SurveyResponse.query.filter_by(user_id=data['user_id'], survey_version=data['survey_version']).first()
+    if response:
+        response.response = data['response']
+        response.completion_time = datetime.utcnow()
+        response.engagement_score = data.get('engagement_score', 0.0)
+        db.session.commit()
+        socketio.emit('update_dashboard', {
+            'user_id': data['user_id'],
+            'survey_version': data['survey_version'],
+            'engagement_score': response.engagement_score
+        })
+        return jsonify({'message': 'Response submitted successfully!'})
+    return jsonify({'message': 'Response not found'}), 404
+
+@app.route('/metrics', methods=['GET'])
+def get_metrics():
+    total_responses = SurveyResponse.query.count()
+    version_a_responses = SurveyResponse.query.filter_by(survey_version='A').count()
+    version_b_responses = SurveyResponse.query.filter_by(survey_version='B').count()
+    
+    engagement_scores = {
+        'A': SurveyResponse.query.filter_by(survey_version='A').with_entities(db.func.avg(SurveyResponse.engagement_score)).scalar(),
+        'B': SurveyResponse.query.filter_by(survey_version='B').with_entities(db.func.avg(SurveyResponse.engagement_score)).scalar()
+    }
+
+    conversions = {
+        'A': SurveyResponse.query.filter_by(survey_version='A', conversion=True).count(),
+        'B': SurveyResponse.query.filter_by(survey_version='B', conversion=True).count()
+    }
+    
+    return jsonify({
+        'total_responses': total_responses,
+        'version_a_responses': version_a_responses,
+        'version_b_responses': version_b_responses,
+        'engagement_scores': engagement_scores,
+        'conversions': conversions
+    })
+
+@app.route('/start_ab_testing', methods=['POST'])
+#@login_required
+def start_ab_testing():
+    try:
+        surveys = Survey.query.all()
+        for survey in surveys:
+            variations = SurveyVariation.query.filter_by(survey_id=survey.id).all()
+            all_versions = [('original', survey)] + [('variation', var) for var in variations]
+
+            users = User.query.all()
+            for user in users:
+                survey_version, content = random.choice(all_versions)
+                response = SurveyResponse(
+                    user_id=user.id,
+                    survey_id=content.id,
+                    survey_version=survey_version,
+                    response='',
+                    completion_time=None,
+                    engagement_score=0.0,
+                    conversion=False
+                )
+                db.session.add(response)
+                db.session.commit()
+        return jsonify({'message': 'A/B testing started'})
+    except Exception as e:
+        app.logger.error(f"Error starting A/B testing: {e}")
+        return jsonify({'message': 'Error starting A/B testing', 'error': str(e)}), 500
+
+@app.route('/reset_surveys', methods=['POST'])
+def reset_surveys():
+    try:
+        db.drop_all()
+        db.create_all()
+        new_surveys = [
+            {'title': 'Survey 1', 'questions': 'Question 1, Question 2, Question 3'},
+            {'title': 'Survey 2', 'questions': 'Question 4, Question 5, Question 6'}
+        ]
+
+        for survey_data in new_surveys:
+            survey = Survey(title=survey_data['title'], questions=survey_data['questions'])
+            db.session.add(survey)
+            db.session.commit()
+
+            # Step 4: Add variations for each survey
+            variations = [
+                {'survey_id': survey.id, 'variation': 'Variation 1 for ' + survey.title},
+                {'survey_id': survey.id, 'variation': 'Variation 2 for ' + survey.title}
+            ]
+
+            for var_data in variations:
+                variation = SurveyVariation(survey_id=var_data['survey_id'], variation=var_data['variation'])
+                db.session.add(variation)
+            db.session.commit()
+
+        return jsonify({'message': 'Surveys reset and new surveys added successfully'})
+    except Exception as e:
+        app.logger.error(f"Error resetting surveys: {e}")
+        return jsonify({'message': 'Error resetting surveys', 'error': str(e)}), 500
+
+@app.route('/clear_database', methods=['POST'])
+def clear_database():
+    try:
+        db.drop_all()
+        db.create_all()
+        
+        return jsonify({'message': 'Database cleared successfully'})
+    except Exception as e:
+        app.logger.error(f"Error clearing database: {e}")
+        return jsonify({'message': 'Error clearing database', 'error': str(e)}), 500
+
+def emit_metrics():
+    metrics = {
+        'engagement_scores': {
+            'A': SurveyResponse.query.filter_by(survey_version='A').with_entities(db.func.avg(SurveyResponse.engagement_score)).scalar(),
+            'B': SurveyResponse.query.filter_by(survey_version='B').with_entities(db.func.avg(SurveyResponse.engagement_score)).scalar()
+        },
+        'conversions': {
+            'A': SurveyResponse.query.filter_by(survey_version='A', conversion=True).count(),
+            'B': SurveyResponse.query.filter_by(survey_version='B', conversion=True).count()
+        }
+    }
+    socketio.emit('update_chart', metrics)
+
+if __name__ == '__main__':
+    with app.app_context():
+        db.create_all()
+    socketio.run(app, debug=True)
+
+index.html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Survey Sparrow Question 4</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <h1>Create Survey</h1>
+    <form id="surveyForm">
+        <label for="title">Title:</label>
+        <input type="text" id="title" name="title"><br><br>
+        <label for="numQuestions">Number of Questions:</label>
+        <input type="number" id="numQuestions" name="numQuestions" min="1"><br><br>
+        <div id="questionsContainer"></div>
+        <button type="button" onclick="addQuestions()">Add Questions</button><br><br>
+        <button type="button" onclick="createSurvey()">Create Survey</button>
+    </form>
+    <h1>Generate Variations</h1>
+    <form id="variationForm">
+        <label for="surveyId">Survey ID:</label>
+        <input type="number" id="surveyId" name="surveyId"><br><br>
+        <button type="button" onclick="generateVariations()">Generate Variations</button>
+    </form>
+    <div id="variationsContainer"></div>
+    <button type="button" onclick="viewSurveys()">View All Surveys</button>
+    <button type="button" onclick="startABTesting()">AB Test Surveys</button>
+    <!-- New button to clear the database -->
+    <button type="button" id="clearDatabaseBtn">Clear Database</button>
+
+    <script>
+        function addQuestions() {
+            const numQuestions = document.getElementById('numQuestions').value;
+            const container = document.getElementById('questionsContainer');
+            container.innerHTML = '';
+            for (let i = 1; i <= numQuestions; i++) {
+                const label = document.createElement('label');
+                label.textContent = `Question ${i}:`;
+                const input = document.createElement('input');
+                input.type = 'text';
+                input.id = `question${i}`;
+                input.name = `question${i}`;
+                container.appendChild(label);
+                container.appendChild(input);
+                container.appendChild(document.createElement('br'));
+                container.appendChild(document.createElement('br'));
+            }
+        }
+
+        function createSurvey() {
+            const title = document.getElementById('title').value;
+            const numQuestions = document.getElementById('numQuestions').value;
+            let questions = '';
+            for (let i = 1; i <= numQuestions; i++) {
+                const question = document.getElementById(`question${i}`).value;
+                questions += question + '\n';
+            }
+
+            fetch('/create_survey', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({title, questions})
+            })
+            .then(response => response.json())
+            .then(data => alert(data.message))
+            .catch(error => console.error('Error creating survey:', error));
+        }
+
+        function generateVariations() {
+            const surveyId = document.getElementById('surveyId').value;
+            fetch(`/generate_variations/${surveyId}`, {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                const container = document.getElementById('variationsContainer');
+                container.innerHTML = '';
+                data.variations.forEach((questionVariations, questionIndex) => {
+                    const questionDiv = document.createElement('div');
+                    questionDiv.innerHTML = `<h3>Question ${questionIndex + 1} Variations:</h3>`;
+                    questionVariations.forEach((variation, variationIndex) => {
+                        const div = document.createElement('div');
+                        div.innerHTML = `<input type="radio" name="question${questionIndex}" value="${variation}" id="variation${questionIndex}_${variationIndex}">
+                                         <label for="variation${questionIndex}_${variationIndex}"><input type="text" value="${variation}" id="variationText${questionIndex}_${variationIndex}"></label>`;
+                        questionDiv.appendChild(div);
+                    });
+                    const saveButton = document.createElement('button');
+                    saveButton.textContent = 'Save Variation';
+                    saveButton.onclick = () => saveVariation(surveyId, questionIndex);
+                    questionDiv.appendChild(saveButton);
+                    container.appendChild(questionDiv);
+                });
+            })
+            .catch(error => console.error('Error generating variations:', error));
+        }
+
+        function saveVariation(surveyId, questionIndex) {
+            const selectedVariation = document.querySelector(`input[name="question${questionIndex}"]:checked`);
+            if (selectedVariation) {
+                const variationText = document.getElementById(`variationText${questionIndex}_${selectedVariation.id.split('_')[1]}`).value;
+                fetch(`/update_question/${surveyId}/${questionIndex}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({selected_variation: variationText})
+                })
+                .then(response => response.json())
+                .then(data => alert(data.message))
+                .catch(error => console.error('Error:', error));
+            } else {
+                alert('Please select a variation to save.');
+            }
+        }
+
+        function viewSurveys() {
+            window.location.href = '/surveys';
+        }
+
+        function startABTesting() {
+            fetch('/ab_test_surveys', {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => alert(data.message))
+            .catch(error => console.error('Error starting A/B testing:', error));
+        }
+
+        // JavaScript to handle the Clear Database button click
+        document.getElementById('clearDatabaseBtn').addEventListener('click', function() {
+            fetch('/clear_database', {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => alert(data.message))
+            .catch(error => console.error('Error clearing database:', error));
+        });
+    </script>
+</body>
+</html>
